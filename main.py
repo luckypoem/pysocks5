@@ -5,7 +5,8 @@ socks5 server
 
 import sys
 import traceback
-from socket import socket, AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR
+import struct
+from socket import socket, AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR, timeout
 from enum import Enum
 import ipaddress
 import struct
@@ -27,13 +28,12 @@ def read_exact(sock, size):
     return result
 
 METHOD_MEANING = {
-    b'\x00': "no auth require",
-    b'\x01': "GSSAPI",
-    b'\x02': "USERNAME/PASSWORD",
+    0: "no auth require",
+    1: "GSSAPI",
+    2: "USERNAME/PASSWORD",
 }
 def explain_client_accept_auth_method(methods):
     for byte in methods:
-        print("bytes:", byte)
         print(METHOD_MEANING.get(byte, "unknown method"))
 
 def auth(sock):
@@ -74,35 +74,52 @@ def connect(sock, client_addr):
         remote_host = read_exact(sock, ord(addr_len))
     port_str = read_exact(sock, 2)
     port = struct.unpack(">H", port_str)[0]
-    remote_sock = socket(AF_INET, SOCK_STREAM)
     print("remote_host:", remote_host, "port:", port)
+    remote_sock = socket(AF_INET, SOCK_STREAM)
     remote_sock.connect((remote_host, port))
+    server_addr, server_port = remote_sock.getsockname()
+    server_addr_bytes = ipaddress.IPv4Address(server_addr).packed
+    #TODO add more resp to client
+    sock.sendall(b"\x05\x00\x00\x01")
+    sock.sendall(server_addr_bytes)
+    sock.sendall(struct.pack(">H", server_port))
     return Result.SUCC, remote_sock
+
+def try_read_to_timeout(sock, size=4096):
+    ret = None
+    try:
+        ret = sock.recv(size)
+    except (ConnectionResetError, BlockingIOError, timeout) as e:
+        pass
+    except:
+        raise
+    return ret
 
 def echo_handler(client_sock, client_addr):
     print("recv conn from {}".format(client_addr))
     ret = auth(client_sock)
     if ret != Result.SUCC:
         print("auth failed")
-        return
+        return ret
     ret, remote_sock = connect(client_sock, client_addr)
     if ret != Result.SUCC:
         print("connect failed")
-        return
+        return ret
+    client_sock.settimeout(0.1)
+    remote_sock.settimeout(0.1)
     while 1:
         try:
-            req = client_sock.recv(4096)
+            req = try_read_to_timeout(client_sock)
             if req:
                 remote_sock.sendall(req)
-            resp = remote_sock.recv(4096)
-            client_sock.sendall(resp)
-        except ConnectionResetError:
-            traceback.print_tb(sys.exc_info()[2])
-            print("ConnectionResetError:", client_addr)
-            break
+            resp = try_read_to_timeout(remote_sock)
+            if resp:
+                client_sock.sendall(resp)
         except:
-            traceback.print_tb(sys.exc_info()[2])
-            print("Unexpected error:", client_addr)
+            print("while exception")
+            exc_info = sys.exc_info()
+            traceback.print_tb(exc_info[2])
+            print("Unexpected error:", exc_info[0], exc_info[1], client_addr)
             break
     print(client_addr, "connection close")
     client_sock.close()
