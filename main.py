@@ -10,6 +10,7 @@ from socket import socket, AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR, timeo
 from enum import Enum
 import ipaddress
 import struct
+from concurrent.futures import ThreadPoolExecutor
 
 class Result(Enum):
     """
@@ -127,13 +128,14 @@ def echo_handler(client_sock, client_addr):
         remote_sock.close()
 
 def echo_server(addr, backlog=5):
+    pool = ThreadPoolExecutor(128)
     sock = socket(AF_INET, SOCK_STREAM)
     sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
     sock.bind(addr)
     sock.listen(backlog)
     while 1:
         client_sock, client_addr = sock.accept()
-        echo_handler(client_sock, client_addr)
+        pool.submit(echo_handler, client_sock, client_addr)
 
 ADDR = ("localhost", 12580)
 if __name__ == "__main__":
